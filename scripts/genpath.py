@@ -1,6 +1,7 @@
 import os
 import argparse
 import math
+from shapely.geometry import LineString, Polygon
 from lib2to3.pgen2.parse import ParseError
 import geopy.distance
 from collections import OrderedDict
@@ -114,8 +115,41 @@ def to_ellipsoid(origin, poly):
         elli_poly.append((lat, lon))
     return elli_poly
 
-def get_length(a, b):
-    return math.sqrt(pow(b[0] - a[0], 2) + pow(b[1] - a[1], 2))
+def get_divided_line(seg, stride):
+    line = LineString(seg)
+    print(f"Length of line is: {str(line.length)}")
+    remainder = math.fmod(line.length, stride)
+    print(f"Remainder after divided by {str(stride)} is {str(remainder)}")
+    numstrides = int((line.length-remainder)/stride)
+    print(f"There is {str(numstrides)} strides that can fit inside the line")
+
+    result = [seg[0]]
+    intdivA = line.interpolate(remainder/2).coords[0]
+    intdivB = LineString((seg[1], seg[0])).interpolate(remainder/2).coords[0]
+    intdivLine = LineString([intdivA, intdivB])
+    for i in range(numstrides):
+        result.append(intdivLine.interpolate(i*stride).coords[0])
+    result.append(seg[1])
+
+    print("Result")
+    for p in result:
+        print(p)
+
+    return result
+
+
+
+    
+def get_stride_lines(box):
+    boxlines = get_poly_segments(box)
+    startseg = boxlines[0]
+    finishseg = boxlines[2]
+    return get_divided_line(startseg, 5)
+
+def get_rotated_bbox(poly, angle):
+    rotated = rotatePolygon(poly, angle)
+    rotated_box = get_bound_box(rotated)
+    return rotatePolygon(rotated_box, (angle*-1))
 
 def get_file_end(path):
     with open(path, "rb") as file:
@@ -127,20 +161,15 @@ def get_file_end(path):
             file.seek(0)
         return file.readline().decode()
 
-def form_writeline(index, home, lat, lon, alt, subindex):
-    return f"{index}\t{home}\t3\t16\t0.00000000\t0.00000000\t0.00000000\t0.00000000\t{lat}\t{lon}\t{alt}\t{subindex}"
+def form_writeline(index, home, lat, lon):
+    return f"{index}\t{home}\t0\t16\t0.00000000\t0.00000000\t0.00000000\t0.00000000\t{lat}\t{lon}\t100.000000\t1\n"
 
 def add_poly_to_mission(path, poly):
     mission_idx = int(get_file_end(path).split('\t')[0]) + 1
     with open(path , 'a') as file:
         for i, p in enumerate(poly):
-            file.write(form_writeline())
-        
+            file.write(form_writeline(str(mission_idx+i), "0", f"{p[0]:.8f}", f"{p[1]:.8f}"))
 
-def get_rotated_bbox(poly, angle):
-    rotated = rotatePolygon(poly, angle)
-    rotated_box = get_bound_box(rotated)
-    return rotatePolygon(rotated_box, (angle*-1))
 
 
 included, excluded = parse_fence_file(args.include)
@@ -158,24 +187,26 @@ line_out = []
 
 with open(args.output, 'w') as file:
     file.write("QGC WPL 110"+"\n")
-    file.write(form_writeline("0", "1", "36.0844996", "-95.7699999", "100.0000000", "1")+"\n")
+    file.write(form_writeline("0", "1", "36.0844996", "-95.7699999"))
 
 origin = get_origin(included[0])
 
+
 cartesian = to_cartesian(origin, included[0])
 
-print(get_file_end(args.include))
-
-
-box = get_rotated_bbox(cartesian, 45)
-elli_box = to_ellipsoid(origin, box)
-
-for p in elli_box:
+box = get_rotated_bbox(cartesian, 20)
+for p in box:
     print(p)
 
+_mission = get_stride_lines(box)
+mission = to_ellipsoid(origin, _mission)
+add_poly_to_mission(args.output, mission)
 
 
 
+# new_points = to_ellipsoid(origin, cartesian)
+# center = get_center_point(included[0])
 
-new_points = to_ellipsoid(origin, cartesian)
-center = get_center_point(included[0])
+
+# elli_box = to_ellipsoid(origin, box)
+# add_poly_to_mission(args.output, elli_box)

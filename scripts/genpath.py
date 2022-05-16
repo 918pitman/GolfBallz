@@ -1,15 +1,11 @@
 import os
 import argparse
 import math
+from unittest import result
 from shapely.geometry import LineString, Polygon
 from lib2to3.pgen2.parse import ParseError
 import geopy.distance
 from collections import OrderedDict
-
-parser = argparse.ArgumentParser(description='Generate a mission with inclusion and exclusion zones')
-parser.add_argument('-i', dest='include', help='Path to the waypoint file input', required=True)
-parser.add_argument('-o', dest='output', help='Path to the waypoint file output', required=True)
-args = parser.parse_args()
 
 def get_bound_box(poly):
     x = [p[0] for p in poly]
@@ -115,36 +111,58 @@ def to_ellipsoid(origin, poly):
         elli_poly.append((lat, lon))
     return elli_poly
 
-def get_divided_line(seg, stride):
+def get_divided_line(seg, space):
     line = LineString(seg)
-    print(f"Length of line is: {str(line.length)}")
-    remainder = math.fmod(line.length, stride)
-    print(f"Remainder after divided by {str(stride)} is {str(remainder)}")
-    numstrides = int((line.length-remainder)/stride)
-    print(f"There is {str(numstrides)} strides that can fit inside the line")
-
+    remainder = math.fmod(line.length, space)
+    count = int((line.length-remainder)/space)+1
     result = [seg[0]]
     intdivA = line.interpolate(remainder/2).coords[0]
     intdivB = LineString((seg[1], seg[0])).interpolate(remainder/2).coords[0]
     intdivLine = LineString([intdivA, intdivB])
-    for i in range(numstrides):
-        result.append(intdivLine.interpolate(i*stride).coords[0])
+
+    for i in range(count):
+        result.append(intdivLine.interpolate(i*space).coords[0])
+
     result.append(seg[1])
 
-    print("Result")
-    for p in result:
-        print(p)
+    return result
+    
+def get_stride_lines(box, stride):
+    boxlines = get_poly_segments(box)
+    startpts = get_divided_line(boxlines[0], stride)
+    finishpts = get_divided_line(boxlines[2], stride)
+    finishpts.reverse()
+    result = []
+
+    for i in range(len(startpts)):
+        result.append((startpts[i], finishpts[i]))
 
     return result
 
+def trim_lines(lines, poly):
+    result = []
+    fence = Polygon(poly)
 
+    for l in lines:
+        trimmed = fence.intersection(LineString(l))
+        if trimmed.geom_type == "LineString" and len(trimmed.coords) == 2:
+            result.append((trimmed.coords[0], trimmed.coords[1]))
+        
+    return result
 
-    
-def get_stride_lines(box):
-    boxlines = get_poly_segments(box)
-    startseg = boxlines[0]
-    finishseg = boxlines[2]
-    return get_divided_line(startseg, 5)
+def link_lines(lines):
+    result = []
+    flip = 0
+    for i, l in enumerate(lines):
+
+        if ((flip + i) % 2 == 0):
+            result.append(l[0])
+            result.append(l[1])
+        else:
+            result.append(l[1])
+            result.append(l[0])
+
+    return result
 
 def get_rotated_bbox(poly, angle):
     rotated = rotatePolygon(poly, angle)
@@ -170,7 +188,10 @@ def add_poly_to_mission(path, poly):
         for i, p in enumerate(poly):
             file.write(form_writeline(str(mission_idx+i), "0", f"{p[0]:.8f}", f"{p[1]:.8f}"))
 
-
+parser = argparse.ArgumentParser(description='Generate a mission with inclusion and exclusion zones')
+parser.add_argument('-i', dest='include', help='Path to the waypoint file input', required=True)
+parser.add_argument('-o', dest='output', help='Path to the waypoint file output', required=True)
+args = parser.parse_args()
 
 included, excluded = parse_fence_file(args.include)
 
@@ -178,35 +199,24 @@ num_in = len(included)
 num_ex = len(excluded)
 print("Found "+str(num_in)+" inclusion polygons")
 print("Found "+str(num_ex)+" exclusion polygons")
+
 if num_in != 1:
     raise ParseError("This script requires the waypoint file to contain exactly one inclusion polygon!")
-
-included_seg = get_poly_segments(included[0])
-
-line_out = []
 
 with open(args.output, 'w') as file:
     file.write("QGC WPL 110"+"\n")
     file.write(form_writeline("0", "1", "36.0844996", "-95.7699999"))
 
 origin = get_origin(included[0])
-
-
 cartesian = to_cartesian(origin, included[0])
-
-box = get_rotated_bbox(cartesian, 20)
-for p in box:
-    print(p)
-
-_mission = get_stride_lines(box)
-mission = to_ellipsoid(origin, _mission)
+box = get_rotated_bbox(cartesian, 30)
+strides = get_stride_lines(box, 1)
+trimmed = trim_lines(strides, cartesian)
+linked = link_lines(trimmed)
+mission = to_ellipsoid(origin, linked)
 add_poly_to_mission(args.output, mission)
 
-
-
-# new_points = to_ellipsoid(origin, cartesian)
-# center = get_center_point(included[0])
-
-
-# elli_box = to_ellipsoid(origin, box)
-# add_poly_to_mission(args.output, elli_box)
+distance = LineString(linked).length
+area = Polygon(box).area
+print(f"Total length is {str(distance)} meters")
+print(f"Total area is {str(area)} square meters")

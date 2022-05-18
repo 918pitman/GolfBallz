@@ -2,7 +2,9 @@ import os
 import argparse
 import math
 from unittest import result
-from shapely.geometry import LineString, Polygon
+from numpy import intersect1d, short
+from shapely.geometry import *
+from shapely.ops import *
 from lib2to3.pgen2.parse import ParseError
 import geopy.distance
 from collections import OrderedDict
@@ -87,9 +89,9 @@ def get_poly_segments(poly):
     for i, p in enumerate(poly):
         one_i = i + 1
         if one_i == len(poly):
-            segments.append((poly[i], poly[0]))
+            segments.append([poly[i], poly[0]])
         else:
-            segments.append((poly[i], poly[one_i]))
+            segments.append([poly[i], poly[one_i]])
     return segments
 
 def get_origin(poly):
@@ -135,7 +137,7 @@ def get_stride_lines(box, stride):
     result = []
 
     for i in range(len(startpts)):
-        result.append((startpts[i], finishpts[i]))
+        result.append([startpts[i], finishpts[i]])
 
     return result
 
@@ -146,13 +148,14 @@ def trim_lines(lines, poly):
     for l in lines:
         trimmed = fence.intersection(LineString(l))
         if trimmed.geom_type == "LineString" and len(trimmed.coords) == 2:
-            result.append((trimmed.coords[0], trimmed.coords[1]))
+            result.append([trimmed.coords[0], trimmed.coords[1]])
         
     return result
 
 def link_lines(lines):
     result = []
     flip = 0
+
     for i, l in enumerate(lines):
 
         if ((flip + i) % 2 == 0):
@@ -168,6 +171,42 @@ def get_rotated_bbox(poly, angle):
     rotated = rotatePolygon(poly, angle)
     rotated_box = get_bound_box(rotated)
     return rotatePolygon(rotated_box, (angle*-1))
+
+def order_line(line, start):
+    i = line.index(start)
+    return line[i:] + line[:i]
+
+def get_shortest_route(line, poly):
+    route = []
+    tool = LineString(line)
+    exclusion = Polygon(poly)
+    intersections = tool.intersection(exclusion)
+
+    if intersections.geom_type == "LineString" and len(intersections.coords) == 2:
+        print("Intersection Found")
+        start = intersections.coords[0]
+        cutpoly = split(exclusion, tool)
+
+        if cutpoly.geoms[0].length <= cutpoly.geoms[1].length:
+            shortest = cutpoly.geoms[0].exterior.coords[1:]
+        else:
+            shortest = cutpoly.geoms[1].exterior.coords[1:]
+
+        ordered = order_line(shortest, start)        
+
+        if ordered[1] == intersections.coords[1]:
+            # Route needs reversed and reordered
+            ordered.reverse()
+            route = order_line(ordered, start)
+        else:
+            route = ordered
+
+    return route
+
+def remove_duplicates(l):
+    result = []
+    [result.append(x) for x in l if x not in result]
+    return result
 
 def get_file_end(path):
     with open(path, "rb") as file:
@@ -209,14 +248,34 @@ with open(args.output, 'w') as file:
 
 origin = get_origin(included[0])
 cartesian = to_cartesian(origin, included[0])
-box = get_rotated_bbox(cartesian, 30)
+box = get_rotated_bbox(cartesian, 35)
 strides = get_stride_lines(box, 1)
 trimmed = trim_lines(strides, cartesian)
-linked = link_lines(trimmed)
-mission = to_ellipsoid(origin, linked)
+
+line = trimmed[60]
+routes = []
+for e in excluded:
+    exc = to_cartesian(origin, e)
+    potential_route = get_shortest_route(line, exc)
+
+    if len(potential_route) != 0:
+        routes.append(potential_route)
+
+def distance_sort(route, start):
+    return LineString([start, route[0]]).length
+
+routes.sort(key=lambda route: distance_sort(route, line[0]))
+
+linepath = [line[0]]
+for r in routes:
+    linepath = linepath + r
+linepath.append(line[1])
+
+# linked = link_lines(trimmed)
+mission = to_ellipsoid(origin, linepath)
 add_poly_to_mission(args.output, mission)
 
-distance = LineString(linked).length
-area = Polygon(box).area
-print(f"Total length is {str(distance)} meters")
-print(f"Total area is {str(area)} square meters")
+# distance = LineString(linked).length
+# area = Polygon(box).area
+# print(f"Total length is {str(distance)} meters")
+# print(f"Total area is {str(area)} square meters")
